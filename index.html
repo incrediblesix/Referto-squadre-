@@ -186,6 +186,7 @@ tr.sel td{background:var(--accent-soft)!important}
 .clock .ctl button{min-height:44px;padding:0 14px;background:transparent;border:1.5px solid color-mix(in srgb,var(--board-ink) 55%,transparent);color:var(--board-ink);border-radius:6px;font-weight:700}
 .clock .ctl button.go{background:var(--board-accent);border-color:var(--board-accent);color:#1B0C04}
 .clock .ctl button:disabled{opacity:.4;cursor:default}
+.clock .hint{flex-basis:100%;font-size:13px;opacity:.85}
 .chip[data-on="1"]{border-color:var(--accent);box-shadow:inset 0 0 0 1.5px var(--accent)}
 .chip .tx{display:flex;flex-direction:column;align-items:flex-start;line-height:1.15}
 .chip .mn{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
@@ -221,7 +222,7 @@ var KEYS=['m1','a1','m2','a2','m3','a3','reb','ast','stl','blk','tov','pf','sec'
 var app=document.getElementById('app');
 var db=null, editable=false;
 var S={players:{},games:{},team:{name:'La mia squadra'},tab:'squadra',gameId:null,sel:null,correct:false,
-  sort:{k:'pts',d:-1},mode:'avg',detail:null,editRoster:false,confirmDel:null,editGame:null,editBox:false,confirmDelP:null,subMode:false,loaded:false,error:'',dirty:false,showLogin:false,
+  sort:{k:'pts',d:-1},mode:'avg',detail:null,editRoster:false,confirmDel:null,editGame:null,editBox:false,confirmDelP:null,subMode:false,starMode:false,loaded:false,error:'',dirty:false,showLogin:false,
   undo:[],form:{date:'',opp:'',home:'home'}};
 
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
@@ -240,9 +241,9 @@ function fmtClock(s){s=Math.max(0,Math.ceil(s-1e-6));return pad2(Math.floor(s/60
 function fmtMS(s){s=Math.max(0,Math.floor(s+1e-6));return pad2(Math.floor(s/60))+':'+pad2(s%60);}
 function gstate(g){
   var s=(g&&g.stats&&g.stats.__game)||{};
-  return {q:s.q||1,qLen:s.qLen||600,el:s.el||0,run:!!s.run,since:s.since||0,on:Object.assign({},s.on||{})};
+  return {q:s.q||1,qLen:s.qLen||600,el:s.el||0,run:!!s.run,since:s.since||0,on:Object.assign({},s.on||{}),starters:Object.assign({},s.starters||{})};
 }
-function packG(c){return {q:c.q,qLen:c.qLen,el:Math.round(c.el*100)/100,run:c.run,since:c.since,on:c.on};}
+function packG(c){return {q:c.q,qLen:c.qLen,el:Math.round(c.el*100)/100,run:c.run,since:c.since,on:c.on,starters:c.starters||{}};}
 function setGame(g,c){var st=Object.assign({},g.stats||{});st.__game=packG(c);g.stats=st;}
 function liveElapsed(g,now){var c=gstate(g);return Math.min(c.qLen,c.el+(c.run?Math.max(0,(now-c.since)/1000):0));}
 function liveSec(g,pid,now){
@@ -298,6 +299,17 @@ function toggleCourt(pid){
   }
   c.on=on;setGame(g,c);touch(S.gameId);render();
 }
+function toggleStarter(pid){
+  var g=S.games[S.gameId];if(!g||!editable)return;
+  var c=settle(g,Date.now()),st=Object.assign({},c.starters),on=Object.assign({},c.on);
+  var fresh=c.q===1&&c.el===0&&!c.run;
+  if(st[pid]){delete st[pid];if(fresh)delete on[pid];}
+  else{
+    if(Object.keys(st).length>=5){flash('Il quintetto iniziale ha già 5 giocatori. Togline uno prima.');return;}
+    st[pid]=1;if(fresh)on[pid]=1;
+  }
+  c.starters=st;c.on=on;setGame(g,c);touch(S.gameId);render();
+}
 function clockPanel(g){
   var c=gstate(g),rem=c.qLen-liveElapsed(g,Date.now());
   var ql=c.q<=4?'Quarto '+c.q:'Supplementare '+(c.q-4);
@@ -309,6 +321,7 @@ function clockPanel(g){
       '<button data-act="clkAdj" data-d="10" aria-label="Aggiungi 10 secondi">+10 s</button>'+
       '<button data-act="clkNext">Quarto successivo</button></div>';
   }
+  if(editable&&Object.keys(c.on).length===0)h+='<div class="hint">Nessun giocatore in campo, quindi i minuti non salgono. Tocca Quintetto per scegliere i 5 titolari, oppure Cambi per far entrare i giocatori.</div>';
   return h+'</div>';
 }
 setInterval(function(){
@@ -319,7 +332,15 @@ setInterval(function(){
   var el=document.getElementById('clk');
   if(el)el.textContent=fmtClock(c.qLen-liveElapsed(g,now));
   var mm=document.querySelectorAll('.mn[data-pid]');
-  for(var i=0;i<mm.length;i++){mm[i].textContent=fmtMS(liveSec(g,mm[i].dataset.pid,now));}
+  var totSec=null;
+  for(var i=0;i<mm.length;i++){
+    var pid=mm[i].dataset.pid,val;
+    if(pid==='*'){
+      if(totSec===null){totSec=0;Object.keys(g.stats||{}).forEach(function(k){if(k!=='__game')totSec+=liveSec(g,k,now);});}
+      val=totSec;
+    }else{val=liveSec(g,pid,now);}
+    mm[i].textContent=fmtMS(val);
+  }
 },1000);
 S.form.date=todayISO();
 
@@ -336,12 +357,17 @@ function teamScore(g){
   var s=0;Object.keys(g.stats||{}).forEach(function(pid){s+=pts(g.stats[pid]);});return s;
 }
 function totals(pid){
-  var t=blank();t.gp=0;
-  games().forEach(function(g){var st=g.stats&&g.stats[pid];if(played(st)){t.gp++;KEYS.forEach(function(k){t[k]+=n(st,k);});}});
+  var t=blank();t.gp=0;t.gs=0;
+  games().forEach(function(g){
+    var st=g.stats&&g.stats[pid];
+    var starter=!!(g.stats&&g.stats.__game&&g.stats.__game.starters&&g.stats.__game.starters[pid]);
+    if(played(st)||starter){t.gp++;if(starter)t.gs++;KEYS.forEach(function(k){t[k]+=n(st,k);});}
+  });
   return t;
 }
 function colVal(t,k,mode){
   if(k==='gp')return t.gp;
+  if(k==='gs')return t.gs;
   if(k==='min'){var mi=n(t,'sec')/60;return mode==='avg'?(t.gp?mi/t.gp:null):mi;}
   if(k==='ftp')return t.a1?t.m1/t.a1*100:null;
   if(k==='p2')return t.a2?t.m2/t.a2*100:null;
@@ -352,11 +378,11 @@ function colVal(t,k,mode){
 function showVal(v,k,mode){
   if(v==null)return '–';
   if(k==='ftp'||k==='p2'||k==='p3')return Math.round(v)+'%';
-  if(k==='gp')return String(v);
+  if(k==='gp'||k==='gs')return String(v);
   if(k==='min')return mode==='avg'?nf1.format(v):String(Math.round(v));
   return mode==='avg'?nf1.format(v):String(v);
 }
-var COLS=[['gp','PG'],['min','MIN'],['pts','PT'],['reb','RIM'],['ast','AST'],['stl','REC'],['blk','STO'],['tov','PP'],['pf','FA'],['ftp','TL%'],['p2','2P%'],['p3','3P%']];
+var COLS=[['gp','PG'],['gs','TIT'],['min','MIN'],['pts','PT'],['reb','RIM'],['ast','AST'],['stl','REC'],['blk','STO'],['tov','PP'],['pf','FA'],['ftp','TL%'],['p2','2P%'],['p3','3P%']];
 
 /* ---------- salvataggio ---------- */
 var pending={},timer=null,flushing=false,flushingId=null;
@@ -462,7 +488,7 @@ function squadraView(){
     '<button data-act="mode" data-m="avg" aria-pressed="'+(mode==='avg')+'">A partita</button>'+
     '<button data-act="mode" data-m="tot" aria-pressed="'+(mode==='tot')+'">Totali</button></div></div>'+
     '<div class="tablewrap"><table><thead><tr>'+head+'</tr></thead><tbody>'+body+'</tbody></table></div>'+
-    '<p class="legend">PG partite giocate · MIN minuti · PT punti · RIM rimbalzi · AST assist · REC recuperi · STO stoppate · PP palle perse · FA falli · TL tiri liberi · 2P e 3P tiri da due e da tre. Tocca un giocatore per vedere le sue partite.</p></section>';
+    '<p class="legend">PG partite giocate · TIT da titolare · MIN minuti · PT punti · RIM rimbalzi · AST assist · REC recuperi · STO stoppate · PP palle perse · FA falli · TL tiri liberi · 2P e 3P tiri da due e da tre. Tocca un giocatore per vedere le sue partite.</p></section>';
   if(S.detail&&S.players[S.detail]){out+=detailView(S.detail);}
   if(editable){
     out+='<section class="sec"><div class="sechead"><h2>Squadra</h2><button class="btn small" data-act="toggleRoster" aria-pressed="'+S.editRoster+'">'+(S.editRoster?'Chiudi':'Modifica nomi e numeri')+'</button></div>';
@@ -534,9 +560,9 @@ function registraView(){
   var cur=(g.stats||{})[S.sel]||{};
   if(editable){
     var c0=gstate(g),nowT=Date.now();
-    out+='<div class="sechead" style="margin-bottom:6px"><span class="lab">'+(S.subMode?'Cambi: tocca i giocatori per farli entrare o uscire (max 5 in campo)':'Tocca un giocatore per segnare le sue statistiche')+'</span><button class="btn small" data-act="subMode" aria-pressed="'+S.subMode+'">'+(S.subMode?'Chiudi cambi':'Cambi')+'</button></div>';
+    out+='<div class="sechead" style="margin-bottom:6px"><span class="lab">'+(S.starMode?'Quintetto iniziale: tocca i 5 giocatori che iniziano (entrano subito in campo)':(S.subMode?'Cambi: tocca i giocatori per farli entrare o uscire (max 5 in campo)':'Tocca un giocatore per segnare le sue statistiche'))+'</span><span style="display:flex;gap:8px"><button class="btn small" data-act="starMode" aria-pressed="'+S.starMode+'">'+(S.starMode?'Chiudi quintetto':'Quintetto')+'</button><button class="btn small" data-act="subMode" aria-pressed="'+S.subMode+'">'+(S.subMode?'Chiudi cambi':'Cambi')+'</button></span></div>';
     out+='<div class="chips" role="group" aria-label="Giocatore">'+ro.map(function(p){
-      return '<button class="chip" data-act="selPlayer" data-id="'+p.id+'" data-on="'+(c0.on[p.id]?1:0)+'" aria-pressed="'+(p.id===S.sel&&!S.subMode)+'"><span class="num">'+(p.number==null?'–':esc(p.number))+'</span><span class="tx"><span class="nm">'+esc(p.name)+'</span><span class="mn" data-pid="'+p.id+'">'+fmtMS(liveSec(g,p.id,nowT))+'</span></span>'+(c0.on[p.id]?'<span class="st">IN</span>':'')+'</button>';
+      return '<button class="chip" data-act="selPlayer" data-id="'+p.id+'" data-on="'+(c0.on[p.id]?1:0)+'" aria-pressed="'+(p.id===S.sel&&!S.subMode&&!S.starMode)+'"><span class="num">'+(p.number==null?'–':esc(p.number))+'</span><span class="tx"><span class="nm">'+esc(p.name)+'</span><span class="mn" data-pid="'+p.id+'">'+fmtMS(liveSec(g,p.id,nowT))+'</span></span>'+(S.starMode?(c0.starters[p.id]?'<span class="st">TIT</span>':''):(c0.on[p.id]?'<span class="st">IN</span>':''))+'</button>';
     }).join('')+'</div>';
     out+='<div class="line"><b>'+esc(S.players[S.sel].name)+'</b> · <b>'+pts(cur)+'</b> PT · TL '+n(cur,'m1')+'/'+n(cur,'a1')+' · 2P '+n(cur,'m2')+'/'+n(cur,'a2')+' · 3P '+n(cur,'m3')+'/'+n(cur,'a3')+' · '+n(cur,'reb')+' RIM · '+n(cur,'ast')+' AST · <span class="mn" data-pid="'+S.sel+'">'+fmtMS(liveSec(g,S.sel,Date.now()))+'</span> MIN</div>';
     var order=['m1','m2','m3','x1','x2','x3','reb','ast','stl','blk','tov','pf'];
@@ -552,14 +578,15 @@ function registraView(){
   }
   /* box score */
   if(S.editBox&&editable){return out+boxEdit(g,ro);}
+  var gs0=gstate(g);
   var tot=blank(),rowsHtml=ro.map(function(p){
     var o=(g.stats||{})[p.id]||{};KEYS.forEach(function(k){tot[k]+=n(o,k);});
     var on=played(o);
-    return '<tr'+(p.id===S.sel&&editable?' class="sel"':'')+'><td><button class="pl" data-act="selPlayer" data-id="'+p.id+'"><span class="num">'+(p.number==null?'–':esc(p.number))+'</span><span class="nm">'+esc(p.name)+'</span></button></td>'+boxCells(o,on)+'</tr>';
+    return '<tr'+(p.id===S.sel&&editable?' class="sel"':'')+'><td><button class="pl" data-act="selPlayer" data-id="'+p.id+'"><span class="num">'+(p.number==null?'–':esc(p.number))+'</span><span class="nm">'+esc(p.name)+(gs0.starters[p.id]?' *':'')+'</span></button></td>'+boxCells(o,on,p.id,g)+'</tr>';
   }).join('');
   out+='<section class="sec"><h2>Tabellino</h2><div class="tablewrap"><table><thead><tr><th scope="col"><button style="text-align:left;cursor:default" tabindex="-1">Giocatore</button></th>'+
     ['MIN','PT','TL','2P','3P','RIM','AST','REC','STO','PP','FA'].map(function(h){return '<th scope="col"><button style="cursor:default" tabindex="-1">'+h+'</button></th>';}).join('')+
-    '</tr></thead><tbody>'+rowsHtml+'</tbody><tfoot><tr><td>Squadra</td>'+boxCells(tot,true)+'</tr></tfoot></table></div></section>';
+    '</tr></thead><tbody>'+rowsHtml+'</tbody><tfoot><tr><td>Squadra</td>'+boxCells(tot,true,'*',g)+'</tr></tfoot></table></div><p class="legend">* in quintetto iniziale</p></section>';
   return out;
 }
 function gameEdit(g){
@@ -586,9 +613,10 @@ function boxEdit(g,ro){
     '<div class="tablewrap"><table><thead><tr>'+head+'</tr></thead><tbody>'+rows+'</tbody></table></div>'+
     '<p class="legend">f. = fatti, t. = tentati. I punti si calcolano da soli e i tentati non possono essere meno dei fatti. Ogni modifica si salva appena esci dal campo.</p></section>';
 }
-function boxCells(o,on){
+function boxCells(o,on,pid,g){
   function c(v){return '<td>'+(on?v:'–')+'</td>';}
-  return c(fmtMS(n(o,'sec')))+c(pts(o))+c(n(o,'m1')+'/'+n(o,'a1'))+c(n(o,'m2')+'/'+n(o,'a2'))+c(n(o,'m3')+'/'+n(o,'a3'))+
+  var mc='<td><span class="mn" data-pid="'+(pid||'')+'">'+fmtMS(pid&&pid!=='*'&&g?liveSec(g,pid,Date.now()):n(o,'sec'))+'</span></td>';
+  return mc+c(pts(o))+c(n(o,'m1')+'/'+n(o,'a1'))+c(n(o,'m2')+'/'+n(o,'a2'))+c(n(o,'m3')+'/'+n(o,'a3'))+
     c(n(o,'reb'))+c(n(o,'ast'))+c(n(o,'stl'))+c(n(o,'blk'))+c(n(o,'tov'))+c(n(o,'pf'));
 }
 
@@ -636,8 +664,13 @@ app.addEventListener('click',function(e){
   if(act==='delAsk'){S.confirmDel=id;return render();}
   if(act==='delNo'){S.confirmDel=null;return render();}
   if(act==='delYes')return delGame(id);
-  if(act==='selPlayer'){if(S.subMode&&editable&&b.classList.contains('chip'))return toggleCourt(id);S.sel=id;return render();}
-  if(act==='subMode'){S.subMode=!S.subMode;return render();}
+  if(act==='selPlayer'){
+    if(S.starMode&&editable&&b.classList.contains('chip'))return toggleStarter(id);
+    if(S.subMode&&editable&&b.classList.contains('chip'))return toggleCourt(id);
+    S.sel=id;return render();
+  }
+  if(act==='subMode'){S.subMode=!S.subMode;S.starMode=false;return render();}
+  if(act==='starMode'){S.starMode=!S.starMode;S.subMode=false;return render();}
   if(act==='clkStart')return clkStart();
   if(act==='clkStop')return clkStop();
   if(act==='clkAdj')return clkAdj(Number(b.dataset.d));
